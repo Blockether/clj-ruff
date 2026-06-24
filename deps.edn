@@ -1,22 +1,30 @@
 ;; clj-ruff — Clojure binding to ruff (astral-sh/ruff) for Python code
-;; FORMATTING ONLY. The `ruff` binary is run as a subprocess over stdin/stdout;
-;; there is no FFI/linting surface.
+;; FORMATTING ONLY, in-process via the JDK Foreign Function & Memory API over a
+;; first-party cdylib (native/ruff-c over ruff_python_formatter). No subprocess,
+;; no linting surface.
 ;;
-;; The binary is resolved at runtime from RUFF_NATIVE_PATH, a bundled classpath
+;; The cdylib is resolved at runtime from RUFF_NATIVE_PATH, a bundled classpath
 ;; resource (com.blockether/ruff-native-<platform>), or — as a fallback — the
-;; matching native jar resolved through Clojure's own dependency machinery
-;; (clojure.tools.deps), which honours configured Maven repos/mirrors/settings.xml.
+;; matching native jar resolved through clojure.tools.deps IF it is on the
+;; caller's classpath.
+;;
+;; NO hard runtime deps: `org.clojure/tools.deps` is intentionally NOT declared
+;; here. It drags in a large tree (incl. cognitect.aws's S3 transporter) that
+;; breaks GraalVM native-image, and it is only needed for the optional
+;; auto-download fallback. Consumers who want that fallback add tools.deps
+;; themselves (or use the `:download` alias). native-image consumers bundle the
+;; `ruff-native-<platform>` jar (or set RUFF_NATIVE_PATH) and need neither.
 {:paths ["src" "resources"]
 
- ;; tools.deps powers the runtime native-jar fallback in
- ;; com.blockether.ruff/resolve-native-jar — the same resolver the clojure CLI
- ;; uses, so :mvn/repos, mirrors and settings.xml are honoured instead of a
- ;; hand-rolled HTTP GET. Loaded lazily via requiring-resolve, so it is NOT
- ;; pulled into a native image (where the binary is bundled/explicit).
- :deps {org.clojure/tools.deps {:mvn/version "0.31.1629"}}
+ :deps {}
 
  :aliases
- {:build
+ {;; Optional: enables the runtime native-jar DOWNLOAD fallback (clojars/central
+  ;; via clojure.tools.deps). Not needed when the native jar is bundled or
+  ;; RUFF_NATIVE_PATH is set. Kept OUT of `:deps` so it never reaches a native image.
+  :download {:deps {org.clojure/tools.deps {:mvn/version "0.31.1629"}}}
+
+  :build
   {:deps {io.github.clojure/tools.build {:mvn/version "0.10.9"}
           slipset/deps-deploy           {:mvn/version "0.2.5"}}
    :ns-default build}
