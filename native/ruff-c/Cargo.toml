@@ -1,0 +1,19 @@
+[package]
+name = "ruff-c"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal C ABI over ruff's Python formatter (ruff_python_formatter) for clj-ruff's FFM binding."
+license = "MIT"
+
+[lib]
+name = "ruff_c"
+crate-type = ["cdylib"]
+
+[dependencies]
+ruff_python_formatter = { git = "https://github.com/astral-sh/ruff", tag = "0.15.19" }
+ruff_formatter = { git = "https://github.com/astral-sh/ruff", tag = "0.15.19" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

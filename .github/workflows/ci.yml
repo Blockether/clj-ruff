@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: build + test ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64,    os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  lib: libruff_c.so,    jdk-arch: x64 }
+          - { name: linux-arm64,  os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, lib: libruff_c.so,    jdk-arch: aarch64 }
+          - { name: darwin-arm64, os: macos-14,         target: aarch64-apple-darwin,      lib: libruff_c.dylib, jdk-arch: aarch64 }
+          - { name: darwin-x64,   os: macos-14,         target: x86_64-apple-darwin,       lib: libruff_c.dylib, jdk-arch: x64, rosetta: true }
+          - { name: windows-x64,  os: windows-latest,   target: x86_64-pc-windows-msvc,    lib: ruff_c.dll,      jdk-arch: x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Cache Rust build (ruff-c)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/ruff-c
+          key: ${{ matrix.target }}
+      - name: Build ruff-c cdylib (release)
+        working-directory: native/ruff-c
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Stage library
+        shell: bash
+        run: |
+          mkdir -p resources/prebuilds/${{ matrix.name }}
+          cp "native/ruff-c/target/${{ matrix.target }}/release/${{ matrix.lib }}" \
+             "resources/prebuilds/${{ matrix.name }}/${{ matrix.lib }}"
+      - name: Install Rosetta 2 (darwin-x64 cross test)
+        if: matrix.rosetta
+        run: softwareupdate --install-rosetta --agree-to-license
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "25"
+          architecture: ${{ matrix.jdk-arch }}
+      - uses: DeLaGuardo/setup-clojure@13.6.1
+        with:
+          cli: latest
+      - name: Run tests against the real ruff-c cdylib
+        run: clojure -X:test
+      - name: Build jar
+        run: clojure -T:build jar

@@ -1,0 +1,16 @@
+{
+  "comment": "clj-ruff binds a first-party cdylib (ruff-c, a C ABI over ruff_python_formatter) through the JDK Foreign Function & Memory API. No reflection/JNI. The FFM downcall stubs below mirror com.blockether.ruff/bind!: ruff_format(void*, jint) -> void*, ruff_free_string(void*) -> void, ruff_version() -> void*. The cdylib ships as a classpath resource prebuilds/<platform>/libruff_c.* (in com.blockether/ruff-native-<platform>); the resources glob embeds it so the binding can extract + load it at run time (or set RUFF_NATIVE_PATH and omit the native jar).",
+  "reflection": [],
+  "jni": [],
+  "resources": [
+    { "glob": "prebuilds/**" }
+  ],
+  "foreign": {
+    "downcalls": [
+      { "returnType": "void*", "parameterTypes": ["void*", "jint"] },
+      { "returnType": "void",  "parameterTypes": ["void*"] },
+      { "returnType": "void*", "parameterTypes": [] }
+    ],
+    "upcalls": []
+  }
+}

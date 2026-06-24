@@ -1,0 +1,32 @@
+;; clj-ruff — Clojure binding to ruff (astral-sh/ruff) for Python code
+;; FORMATTING ONLY. The `ruff` binary is run as a subprocess over stdin/stdout;
+;; there is no FFI/linting surface.
+;;
+;; The binary is resolved at runtime from RUFF_NATIVE_PATH, a bundled classpath
+;; resource (com.blockether/ruff-native-<platform>), or — as a fallback — the
+;; matching native jar resolved through Clojure's own dependency machinery
+;; (clojure.tools.deps), which honours configured Maven repos/mirrors/settings.xml.
+{:paths ["src" "resources"]
+
+ ;; tools.deps powers the runtime native-jar fallback in
+ ;; com.blockether.ruff/resolve-native-jar — the same resolver the clojure CLI
+ ;; uses, so :mvn/repos, mirrors and settings.xml are honoured instead of a
+ ;; hand-rolled HTTP GET. Loaded lazily via requiring-resolve, so it is NOT
+ ;; pulled into a native image (where the binary is bundled/explicit).
+ :deps {org.clojure/tools.deps {:mvn/version "0.31.1629"}}
+
+ :aliases
+ {:build
+  {:deps {io.github.clojure/tools.build {:mvn/version "0.10.6"}
+          slipset/deps-deploy           {:mvn/version "0.2.2"}}
+   :ns-default build}
+
+  :test
+  {:extra-paths ["test"]
+   :extra-deps  {io.github.cognitect-labs/test-runner
+                 {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+   :main-opts   ["-m" "cognitect.test-runner"]
+   :exec-fn     cognitect.test-runner.api/test
+   ;; FFM native calls are a restricted operation; opt in so tests don't warn.
+   ;; Production consumers (e.g. vis) pass the same flag.
+   :jvm-opts    ["--enable-native-access=ALL-UNNAMED"]}}}
