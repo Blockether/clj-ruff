@@ -23,6 +23,11 @@ jobs:
           - { name: darwin-x64,   os: macos-14,         target: x86_64-apple-darwin,       lib: libruff_c.dylib }
           - { name: windows-x64,  os: windows-latest,   target: x86_64-pc-windows-msvc,    lib: ruff_c.dll }
     runs-on: ${{ matrix.os }}
+    # Windows hits a reproducible .m2 rename race (AccessDeniedException) while
+    # deps-deploy resolves its own deps; -Sthreads 1 below fixes it, but keep the
+    # Windows job non-blocking so a future regression there can never hold up the
+    # main-jar release (Windows users still get the runtime-download fallback).
+    continue-on-error: ${{ matrix.name == 'windows-x64' }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -53,7 +58,7 @@ jobs:
           VERSION: ${{ github.ref_name }}
           CLOJARS_USERNAME: blockether-deployer
           CLOJARS_PASSWORD: ${{ secrets.CLOJARS_DEPLOY_TOKEN }}
-        run: clojure -T:build deploy-native :platform "${{ matrix.name }}"
+        run: clojure -Sthreads 1 -T:build deploy-native :platform "${{ matrix.name }}"
 
   release:
     name: Release & Deploy main jar to Clojars
@@ -81,7 +86,7 @@ jobs:
           VERSION: ${{ github.ref_name }}
           CLOJARS_USERNAME: blockether-deployer
           CLOJARS_PASSWORD: ${{ secrets.CLOJARS_DEPLOY_TOKEN }}
-        run: clojure -T:build deploy
+        run: clojure -Sthreads 1 -T:build deploy
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
