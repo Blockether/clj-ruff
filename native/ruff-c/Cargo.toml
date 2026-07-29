@@ -1,6 +1,6 @@
 [package]
 name = "ruff-c"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Minimal C ABI over ruff's Python formatter (ruff_python_formatter) and linter (ruff_linter) for clj-ruff's FFM binding."
 license = "MIT"
@@ -20,6 +20,7 @@ ruff_python_index = { git = "https://github.com/astral-sh/ruff", tag = "0.16.0" 
 ruff_python_parser = { git = "https://github.com/astral-sh/ruff", tag = "0.16.0" }
 ruff_source_file = { git = "https://github.com/astral-sh/ruff", tag = "0.16.0" }
 ruff_text_size = { git = "https://github.com/astral-sh/ruff", tag = "0.16.0" }
+ruff_workspace = { git = "https://github.com/astral-sh/ruff", tag = "0.16.0" }
 
 [profile.release]
 lto = true

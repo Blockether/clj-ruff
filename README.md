@@ -56,7 +56,7 @@ For a slim deploy, also add the one native artifact for your target, e.g.
 
 (ruff/format-or "def (((broken" {})       ; => "def (((broken"  (verbatim fallback; never throws)
 
-(ruff/version)                            ; => "0.2.0 (ruff 0.16.0)"
+(ruff/version)                            ; => "0.3.0 (ruff 0.16.0)"
 (ruff/available?)                         ; => true
 ```
 
@@ -65,9 +65,11 @@ the input unchanged instead — the convenient display-side default.
 
 ### Format options
 
-| key            | meaning                                            |
-|----------------|----------------------------------------------------|
-| `:line-length` | wrap width (`0` / omitted → ruff default **88**)   |
+| key            | meaning                                                                 |
+|----------------|------------------------------------------------------------------------|
+| `:config`      | path to a `ruff.toml` / `.ruff.toml` / `pyproject.toml` to apply        |
+| `:path`        | the file the source came from (`.pyi` formats as a stub; per-path opts) |
+| `:line-length` | wrap width — **overrides** the config (`0` / omitted → the config's, else ruff's **88**) |
 
 ## Lint
 
@@ -84,11 +86,12 @@ the input unchanged instead — the convenient display-side default.
 
 Rows/columns are **1-based**, `:end-row`/`:end-col` exclusive, `:code` is the
 noqa code (`F401`) when the rule has one and otherwise the rule id. With no
-`:select` you get ruff's own default rule set; `:select` **replaces** it and
-`:ignore` subtracts from whatever is selected. Inline `# noqa` comments in the
-source are honoured; no config file is ever read. Syntax errors come back as
-ordinary diagnostics with code `invalid-syntax` (they do **not** throw) — an
-unknown rule selector does throw, and `lint-or` swallows it.
+`:select` you get exactly the rule set the `ruff` CLI applies with no config —
+**`E4`, `E7`, `E9`, `F`** — and `:select` **replaces** it while `:ignore`
+subtracts from whatever is selected. Inline `# noqa` comments in the source are
+honoured. Syntax errors come back as ordinary diagnostics with code
+`invalid-syntax` (they do **not** throw) — an unknown rule selector does throw,
+and `lint-or` swallows it.
 
 ### Lint options
 
@@ -96,8 +99,31 @@ unknown rule selector does throw, and `lint-or` swallows it.
 |-----------------|----------------------------------------------------------------------|
 | `:select`       | replace the default rule set — `"F,E501"`, `:F401`, `["F" "B"]`, `"ALL"` |
 | `:ignore`       | disable these selectors on top of the selection                      |
-| `:line-length`  | limit for `E501` / wrap-width rules (`0` / omitted → **88**)          |
+| `:line-length`  | limit for `E501` / wrap-width rules — overrides the config (`0` / omitted → **88**) |
 | `:preview`      | also run ruff's preview rules                                        |
+| `:config`       | path to a ruff configuration file to apply                           |
+| `:path`         | the file the source came from (source type + per-path overrides)     |
+
+## Configuration files
+
+Nothing is discovered implicitly: with no `:config` the result depends only on
+the source and the explicit options, which is what makes an editor integration
+reproducible. Ask for discovery when you want it:
+
+```clojure
+(ruff/config-file "src/pkg/mod.py")   ; => "/repo/ruff.toml", or nil when the
+                                      ;    tree has none (nil is not an error)
+(ruff/lint code {:config (ruff/config-file "src/pkg/mod.py")
+                 :path   "src/pkg/mod.py"})
+```
+
+`config-file` walks ancestors exactly like the `ruff` CLI: `.ruff.toml`,
+`ruff.toml`, then a `pyproject.toml` **that carries a `[tool.ruff]` table**.
+A passed `:config` is resolved with ruff's own loader, so `extend`, `[lint]` /
+`[format]` tables, `select`, `ignore`, `line-length`, `target-version`,
+`per-file-ignores` and friends all behave as they do for the CLI. Resolved
+settings are cached per (path, mtime), so walking a directory parses the config
+once and an edited config is still picked up.
 
 ## GraalVM native-image
 

@@ -6,9 +6,16 @@
    first-party cdylib, `ruff-c` (native/ruff-c, a thin `extern \"C\"` wrapper over
    ruff's `ruff_python_formatter` + `ruff_linter` crates), exactly the way
    clj-fff binds `fff-c`. Both run IN-PROCESS via a downcall — no subprocess, no
-   CLI, no config discovery. `format` takes Python source and returns it
-   reformatted (long calls/collections wrapped multiline, black-compatible
-   style); `lint` returns ruff's diagnostics as plain Clojure maps.
+   CLI. `format` takes Python source and returns it reformatted (long
+   calls/collections wrapped multiline, black-compatible style); `lint` returns
+   ruff's diagnostics as plain Clojure maps.
+
+   Ruff CONFIGURATION FILES are first class: `config-file` finds the nearest
+   `.ruff.toml` / `ruff.toml` / `pyproject.toml` with `[tool.ruff]` exactly the
+   way the CLI does, and passing it as `:config` makes `format`/`lint` honour
+   that file's real options (`select`/`ignore`, `line-length`, `target-version`,
+   `preview`, `[format]` quote/indent/line-ending/docstring settings, `extend`
+   chains). Discovery is never implicit: no `:config`, no file lookup.
 
    Run the JVM with `--enable-native-access=ALL-UNNAMED` so the foreign linker
    may load the library without a restricted-method warning.
@@ -167,16 +174,52 @@
         opts   (make-array Linker$Option 0)
         sym    (fn [name] (.orElseThrow (.find lookup name)))
         down   (fn [name desc] (.downcallHandle linker (sym name) desc opts))]
-    {:format  (down "ruff_format"      (fd addr addr u32))
-     :lint    (down "ruff_lint"        (fd addr addr u32 addr addr u32))
-     :free    (down "ruff_free_string" (fd nil addr))
-     :version (down "ruff_version"     (fd addr))}))
+    {:format      (down "ruff_format"             (fd addr addr u32))
+     :format-cfg  (down "ruff_format_with_config" (fd addr addr addr addr u32))
+     :lint        (down "ruff_lint"               (fd addr addr u32 addr addr u32))
+     :lint-cfg    (down "ruff_lint_with_config"   (fd addr addr addr addr u32 addr addr u32))
+     :find-config (down "ruff_find_config"        (fd addr addr))
+     :last-error  (down "ruff_last_error"         (fd addr))
+     :free        (down "ruff_free_string"        (fd nil addr))
+     :version     (down "ruff_version"            (fd addr))}))
 
 (defonce ^:private handles (delay (bind!)))
 (defn- h [k] (get @handles k))
 (defn- invoke [k & args] (.invokeWithArguments ^MethodHandle (h k) (object-array args)))
 (defn- null? [^MemorySegment p] (or (nil? p) (= 0 (.address p))))
 (defn- cstr [^MemorySegment p] (when-not (null? p) (.getString (.reinterpret p Long/MAX_VALUE) 0)))
+
+(defn- take-string!
+  "Read an owned `char*` result and free it. nil when the call returned NULL."
+  [^MemorySegment p]
+  (when-not (null? p)
+    (let [s (cstr p)]
+      (invoke :free p)
+      s)))
+
+(defn- last-error
+  "The message the cdylib recorded for the failing call on THIS thread, if any.
+   Config-aware entry points always set one; the legacy ones may not."
+  []
+  (take-string! (invoke :last-error)))
+
+;; ---------------------------------------------------------------------------
+;; Public API — configuration discovery
+;; ---------------------------------------------------------------------------
+
+(defn config-file
+  "Nearest ruff configuration file governing `path` (a file or a directory),
+   searched exactly the way the ruff CLI searches: `.ruff.toml`, then
+   `ruff.toml`, then a `pyproject.toml` that actually has a `[tool.ruff]`
+   table — in `path`'s own directory, then every ancestor. Returns the absolute
+   path as a String, or nil when the tree has no ruff configuration at all.
+
+   That nil is the signal to tell a user \"this project has no ruff config\";
+   `format`/`lint` fall back to ruff's built-in defaults when it happens."
+  ^String [path]
+  (when (some? path)
+    (with-open [arena (Arena/ofConfined)]
+      (take-string! (invoke :find-config (.allocateFrom ^Arena arena (str path)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Public API — formatting
@@ -186,24 +229,39 @@
   "Format Python `code` and return the reformatted source as a String.
 
    Options:
-     :line-length  int — wrap width (0 / omitted => ruff default 88).
+     :config       path — a ruff configuration file (`ruff.toml`, `.ruff.toml`
+                          or a `pyproject.toml` with `[tool.ruff]`). Its
+                          `[format]` section is honoured in full: `quote-style`,
+                          `indent-style`, `indent-width`, `line-ending`,
+                          `skip-magic-trailing-comma`, `docstring-code-format`,
+                          `docstring-code-line-length`, `line-length`,
+                          `target-version`, `preview` — plus `extend` chains.
+                          Use `config-file` to discover it.
+     :path         path — the file the source came from. Selects the source type
+                          (`.pyi` stubs format differently) and resolves
+                          path-specific `target-version` overrides.
+     :line-length  int  — explicit wrap width; OVERRIDES the configuration
+                          (0 / omitted => the config's, else ruff's 88).
 
-   Runs entirely in-process (no subprocess, no pyproject.toml / ruff.toml
-   discovery): output depends only on `code` and `:line-length`. Throws ex-info
-   when ruff can't format the input (syntactically invalid Python); callers that
+   Runs entirely in-process (no subprocess). With no `:config` the result
+   depends only on `code`, `:path` and `:line-length` — ruff's defaults, no
+   implicit discovery. Throws ex-info when ruff can't format the input
+   (syntactically invalid Python, or an unreadable/invalid config); callers that
    want a verbatim fallback should use `format-or` or catch."
   (^String [code] (format code nil))
-  (^String [^String code {:keys [line-length]}]
+  (^String [^String code {:keys [line-length config path]}]
    (when (nil? code) (throw (ex-info "ruff/format: code is nil" {})))
    (with-open [arena (Arena/ofConfined)]
-     (let [src (.allocateFrom ^Arena arena ^String code)
-           ret ^MemorySegment (invoke :format src (int (or line-length 0)))]
-       (if (null? ret)
-         (throw (ex-info "ruff: format failed (syntactically invalid Python, or a parse/format error)"
-                  {:line-length line-length}))
-         (let [s (cstr ret)]
-           (invoke :free ret)
-           s))))))
+     (let [cs  (fn [s] (if s (.allocateFrom ^Arena arena (str s)) MemorySegment/NULL))
+           ret ^MemorySegment (if (or config path)
+                                (invoke :format-cfg (cs code) (cs config) (cs path)
+                                        (int (or line-length 0)))
+                                (invoke :format (cs code) (int (or line-length 0))))]
+       (or (take-string! ret)
+           (let [err (last-error)]
+             (throw (ex-info (str "ruff: format failed" (when err (str " — " err)))
+                             {:line-length line-length :config (some-> config str)
+                              :path (some-> path str) :error err}))))))))
 
 (defn format-or
   "Like `format`, but returns `code` unchanged if ruff is unavailable or fails
@@ -270,37 +328,59 @@
    the noqa code (`F401`) when the rule has one, else the rule id.
 
    Options:
-     :line-length  int          — width for line-length rules (0/omitted => 88).
-     :select       selectors    — REPLACE the default rule set (\"F,E501\",
-                                  :F401, [\"F\" \"B\"]…). Omitted => ruff's
-                                  default selection (E4, E7, E9, F …).
-     :ignore       selectors    — disable these on top of the selection.
-     :preview      boolean      — also run preview rules.
+     :config       path       — a ruff configuration file (`ruff.toml`,
+                                `.ruff.toml`, or a `pyproject.toml` carrying
+                                `[tool.ruff]`). Its `[lint]` section is honoured
+                                in full: `select`, `extend-select`, `ignore`,
+                                `fixable`, `dummy-variable-rgx`, per-rule
+                                sections (`[lint.pydocstyle]`, `[lint.isort]`,
+                                …), `line-length`, `target-version`, `preview`
+                                and `extend` chains. Use `config-file` to
+                                discover it; without one you get ruff's built-in
+                                default selection (E4, E7, E9, F).
+     :path         path       — the file the source came from; reported in
+                                diagnostics and used for `.pyi` source typing.
+     :line-length  int        — width for line-length rules; OVERRIDES config.
+     :select       selectors  — REPLACE the selected rule set (\"F,E501\", :F401,
+                                [\"F\" \"B\"]…); OVERRIDES config.
+     :ignore       selectors  — disable these on top of the selection.
+     :preview      boolean    — also run preview rules; OVERRIDES config.
 
-   Runs entirely in-process; no `# noqa`-file discovery and no `pyproject.toml` /
-   `ruff.toml` lookup, so the result depends only on `code` and these options
-   (inline `# noqa` comments in the source ARE honoured). Throws ex-info when
-   ruff cannot lint the input (unknown selector, or unparsable source); use
-   `lint-or` for the never-throw variant."
+   Runs entirely in-process. Inline `# noqa` comments in the source are always
+   honoured. Not supported: `per-file-ignores` (there is no project file walk
+   here — one source, one call) and `exclude` patterns; apply those at the call
+   site. Throws ex-info when ruff cannot lint the input (unknown selector,
+   unreadable/invalid config, or unparsable source); use `lint-or` for the
+   never-throw variant."
   ([code] (lint code nil))
-  ([^String code {:keys [line-length select ignore preview]}]
+  ([^String code {:keys [line-length select ignore preview config path]}]
    (when (nil? code) (throw (ex-info "ruff/lint: code is nil" {})))
    (with-open [arena (Arena/ofConfined)]
-     (let [cs  (fn [^String s] (if s (.allocateFrom ^Arena arena s) MemorySegment/NULL))
-           ret ^MemorySegment (invoke :lint
-                                      (cs code)
-                                      (int (or line-length 0))
-                                      (cs (selector-spec select))
-                                      (cs (selector-spec ignore))
-                                      (int (if preview 1 0)))]
-       (if (null? ret)
-         (throw (ex-info "ruff: lint failed (unknown rule selector, or a parse error)"
-                         {:select select :ignore ignore :line-length line-length}))
-         (let [s (cstr ret)]
-           (invoke :free ret)
-           (into []
-                 (keep parse-diagnostic)
-                 (str/split-lines (str/trim-newline (or s ""))))))))))
+     (let [cs  (fn [s] (if s (.allocateFrom ^Arena arena (str s)) MemorySegment/NULL))
+           ret ^MemorySegment (if (or config path)
+                                (invoke :lint-cfg
+                                        (cs code)
+                                        (cs config)
+                                        (cs path)
+                                        (int (or line-length 0))
+                                        (cs (selector-spec select))
+                                        (cs (selector-spec ignore))
+                                        (int (if preview 1 0)))
+                                (invoke :lint
+                                        (cs code)
+                                        (int (or line-length 0))
+                                        (cs (selector-spec select))
+                                        (cs (selector-spec ignore))
+                                        (int (if preview 1 0))))]
+       (if-let [s (take-string! ret)]
+         (into []
+               (keep parse-diagnostic)
+               (str/split-lines (str/trim-newline s)))
+         (let [err (last-error)]
+           (throw (ex-info (str "ruff: lint failed" (when err (str " — " err)))
+                           {:select select :ignore ignore :line-length line-length
+                            :config (some-> config str) :path (some-> path str)
+                            :error err}))))))))
 
 (defn lint-or
   "Like `lint`, but returns `default` (nil unless given) if ruff is unavailable

@@ -45,12 +45,23 @@
 (deftest lint-clean-source-is-empty
   (is (= [] (ruff/lint "x = 1\n"))))
 
+(deftest lint-default-rule-set-is-ruff-cli-default
+  (testing "no configuration => exactly ruff's own default selection: E4, E7, E9, F"
+    (is (= ["E701" "E401" "E722" "E741" "F401"]
+           (distinct (map :code (ruff/lint (str "import os\n"
+                                                "import sys, collections\n"
+                                                "try:\n  pass\nexcept: pass\n"
+                                                "l = 1\n"))))))
+    (testing "and nothing outside it — no isort (I), no flake8-bandit (S), no E501"
+      (is (empty? (ruff/lint (str "import sys\nimport os\n"
+                                  "print(os, sys)\n"
+                                  "y = \"" (apply str (repeat 120 "a")) "\"\n"
+                                  "print(y)\n")))))))
+
 (deftest lint-select-replaces-default-rule-set
-  (testing "E711 is not in ruff's default selection"
-    (is (empty? (ruff/lint "x = 1\nif x == None: pass\n"))))
-  (testing "explicit :select turns it on — string, keyword and collection forms"
+  (testing "explicit :select narrows to just that rule — string, keyword and collection forms"
     (doseq [sel ["E711" :E711 ["E711"] ["F" "E711"]]]
-      (is (= ["E711"] (map :code (ruff/lint "x = 1\nif x == None: pass\n" {:select sel})))
+      (is (= ["E711"] (map :code (ruff/lint "x = 1\nif x == None:\n    pass\n" {:select sel})))
           (str "select " (pr-str sel))))))
 
 (deftest lint-ignore-subtracts
@@ -92,3 +103,63 @@
   (let [out (ruff/format "a_very_long_variable_name_here = another_long_name + yet_another_long_name_x"
                          {:line-length 40})]
     (is (str/includes? out "(\n"))))
+
+;; ---------------------------------------------------------------------------
+;; configuration files
+;; ---------------------------------------------------------------------------
+
+(defn- tmp-project
+  "A throwaway directory holding `files` ({relative-name content}). Returns its
+   java.io.File."
+  [files]
+  (let [dir (.toFile (java.nio.file.Files/createTempDirectory
+                      "clj-ruff-cfg" (make-array java.nio.file.attribute.FileAttribute 0)))]
+    (.deleteOnExit dir)
+    (doseq [[name content] files
+            :let [f (java.io.File. dir ^String name)]]
+      (.mkdirs (.getParentFile f))
+      (spit f content)
+      (.deleteOnExit f))
+    dir))
+
+(deftest config-file-discovery
+  (testing "ruff.toml is found from a file inside the tree, like the ruff CLI"
+    (let [dir (tmp-project {"ruff.toml" "line-length = 50\n"
+                            "pkg/a.py"  "x = 1\n"})]
+      (is (= (.getCanonicalPath (java.io.File. dir "ruff.toml"))
+             (ruff/config-file (str (java.io.File. dir "pkg/a.py")))
+             (ruff/config-file (str (java.io.File. dir "pkg")))))))
+  (testing "pyproject.toml counts only when it carries [tool.ruff]"
+    (let [bare (tmp-project {"pyproject.toml" "[project]\nname = \"x\"\n"})
+          real (tmp-project {"pyproject.toml" "[project]\nname = \"x\"\n[tool.ruff]\nline-length = 50\n"})]
+      (is (nil? (ruff/config-file (str bare))))
+      (is (= (.getCanonicalPath (java.io.File. real "pyproject.toml"))
+             (ruff/config-file (str real))))))
+  (testing "no configuration anywhere in the tree is nil, not an error"
+    (is (nil? (ruff/config-file (str (tmp-project {"a.py" "x = 1\n"})))))))
+
+(deftest config-drives-format-and-lint
+  (let [dir  (tmp-project {"ruff.toml" "line-length = 40\n[lint]\nselect = [\"E\", \"F\", \"I\"]\n"})
+        cfg  (str (java.io.File. dir "ruff.toml"))
+        long "import sys\nimport os\nx = [\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"]\n"]
+    (testing "the config's line-length wraps the formatter"
+      (is (str/includes? (ruff/format long {:config cfg}) "x = [\n"))
+      (is (not (str/includes? (ruff/format long) "x = [\n"))))
+    (testing "the config's select turns on rules outside the default set"
+      (let [codes (set (map :code (ruff/lint long {:config cfg})))]
+        (is (contains? codes "E501"))
+        (is (contains? codes "I001"))))
+    (testing ":line-length still overrides the configuration"
+      (is (not (str/includes? (ruff/format long {:config cfg :line-length 200}) "x = [\n"))))
+    (testing "an unreadable configuration is an ex-info, not a silent default"
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (ruff/format "x = 1\n" {:config (str (java.io.File. dir "nope.toml"))}))))))
+
+(deftest path-selects-source-type
+  (testing ":path .pyi formats as a stub — blank lines between defs collapse"
+    (let [src "def f() -> int: ...\n\n\n\ndef g() -> int: ...\n"]
+      (is (= "def f() -> int: ...\ndef g() -> int: ...\n"
+             (ruff/format src {:path "s.pyi"})))
+      (is (= "def f() -> int: ...\n\n\ndef g() -> int: ...\n"
+             (ruff/format src {:path "mod.py"})
+             (ruff/format src))))))
