@@ -219,7 +219,12 @@
   ^String [path]
   (when (some? path)
     (with-open [arena (Arena/ofConfined)]
-      (take-string! (invoke :find-config (.allocateFrom ^Arena arena (str path)))))))
+      (when-let [s (take-string! (invoke :find-config (.allocateFrom ^Arena arena (str path))))]
+        ;; Rust canonicalisation hands back Windows extended-length paths
+        ;; (`\\?\C:\…`); callers want the plain path they passed in.
+        (cond (str/starts-with? s "\\\\?\\UNC\\") (str "\\\\" (subs s 8))
+              (str/starts-with? s "\\\\?\\") (subs s 4)
+              :else s)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Public API — formatting
@@ -347,9 +352,11 @@
      :preview      boolean    — also run preview rules; OVERRIDES config.
 
    Runs entirely in-process. Inline `# noqa` comments in the source are always
-   honoured. Not supported: `per-file-ignores` (there is no project file walk
-   here — one source, one call) and `exclude` patterns; apply those at the call
-   site. Throws ex-info when ruff cannot lint the input (unknown selector,
+   honoured, and `per-file-ignores` from the config apply when you pass `:path`
+   (the config's relative globs are matched against the config file's own
+   directory, exactly like the CLI). Not supported: `exclude` patterns — one
+   source, one call, so apply those at the call site. Throws ex-info when ruff
+   cannot lint the input (unknown selector,
    unreadable/invalid config, or unparsable source); use `lint-or` for the
    never-throw variant."
   ([code] (lint code nil))

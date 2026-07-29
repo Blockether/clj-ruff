@@ -1,6 +1,6 @@
 [package]
 name = "ruff-c"
-version = "0.3.0"
+version = "0.3.2"
 edition = "2024"
 description = "Minimal C ABI over ruff's Python formatter (ruff_python_formatter) and linter (ruff_linter) for clj-ruff's FFM binding."
 license = "MIT"
