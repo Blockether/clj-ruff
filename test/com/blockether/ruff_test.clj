@@ -163,3 +163,17 @@
       (is (= "def f() -> int: ...\n\n\ndef g() -> int: ...\n"
              (ruff/format src {:path "mod.py"})
              (ruff/format src))))))
+
+(deftest config-relative-globs-anchor-at-the-config-directory
+  (testing "per-file-ignores match paths relative to the config, not the CWD"
+    (let [dir (tmp-project {"ruff.toml" (str "[lint]\nselect = [\"F\"]\n"
+                                             "[lint.per-file-ignores]\n"
+                                             "\"shims/*.py\" = [\"F401\"]\n")
+                            "shims/a.py" "import os\n"
+                            "pkg/b.py"   "import os\n"})
+          cfg (str (java.io.File. dir "ruff.toml"))
+          codes (fn [rel] (mapv :code (ruff/lint "import os\n"
+                                                 {:config cfg
+                                                  :path (str (java.io.File. dir ^String rel))})))]
+      (is (= [] (codes "shims/a.py")))
+      (is (= ["F401"] (codes "pkg/b.py"))))))

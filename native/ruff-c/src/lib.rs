@@ -219,10 +219,17 @@ fn settings_for(config_path: &str) -> Result<Arc<Settings>, String> {
         return Ok(Arc::clone(settings));
     }
 
+    // ANCESTOR, not `UserSpecified`: `--config <file>` resolves relative paths
+    // (`per-file-ignores`, `exclude`, `src`) against the CURRENT DIRECTORY, which
+    // for an embedded library is wherever the host JVM happens to have started.
+    // `Ancestor` is what a plain `ruff check` inside the project uses — relative
+    // globs anchor at the configuration file's own directory — and that is the
+    // only interpretation that makes a discovered config behave identically no
+    // matter who called us.
     let settings = resolve_root_settings(
         Path::new(config_path),
         &Verbatim,
-        ConfigurationOrigin::UserSpecified,
+        ConfigurationOrigin::Ancestor,
     )
     .map_err(|err| format!("invalid ruff configuration `{config_path}`: {err:#}"))?;
     let settings = Arc::new(settings);
