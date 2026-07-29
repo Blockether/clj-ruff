@@ -1,13 +1,14 @@
 (ns com.blockether.ruff
   "Clojure binding to ruff (https://github.com/astral-sh/ruff) for Python code
-   FORMATTING ONLY, through the JDK Foreign Function & Memory API.
+   FORMATTING and LINTING, through the JDK Foreign Function & Memory API.
 
    ruff does not publish a C-ABI library — only a CLI. So this binds a tiny
    first-party cdylib, `ruff-c` (native/ruff-c, a thin `extern \"C\"` wrapper over
-   ruff's `ruff_python_formatter` crate), exactly the way clj-fff binds `fff-c`.
-   Formatting runs IN-PROCESS via a downcall — no subprocess, no CLI, no config
-   discovery. `format` takes Python source and returns it reformatted (long
-   calls/collections wrapped multiline, black-compatible style).
+   ruff's `ruff_python_formatter` + `ruff_linter` crates), exactly the way
+   clj-fff binds `fff-c`. Both run IN-PROCESS via a downcall — no subprocess, no
+   CLI, no config discovery. `format` takes Python source and returns it
+   reformatted (long calls/collections wrapped multiline, black-compatible
+   style); `lint` returns ruff's diagnostics as plain Clojure maps.
 
    Run the JVM with `--enable-native-access=ALL-UNNAMED` so the foreign linker
    may load the library without a restricted-method warning.
@@ -167,6 +168,7 @@
         sym    (fn [name] (.orElseThrow (.find lookup name)))
         down   (fn [name desc] (.downcallHandle linker (sym name) desc opts))]
     {:format  (down "ruff_format"      (fd addr addr u32))
+     :lint    (down "ruff_lint"        (fd addr addr u32 addr addr u32))
      :free    (down "ruff_free_string" (fd nil addr))
      :version (down "ruff_version"     (fd addr))}))
 
@@ -177,7 +179,7 @@
 (defn- cstr [^MemorySegment p] (when-not (null? p) (.getString (.reinterpret p Long/MAX_VALUE) 0)))
 
 ;; ---------------------------------------------------------------------------
-;; Public API — formatting only
+;; Public API — formatting
 ;; ---------------------------------------------------------------------------
 
 (defn format
@@ -210,6 +212,108 @@
   (^String [code opts]
    (try (format code opts)
         (catch Throwable _ code))))
+
+;; ---------------------------------------------------------------------------
+;; Public API — linting
+;; ---------------------------------------------------------------------------
+
+(defn- selector-spec
+  "Normalise a rule-selector option to the comma-separated string the cdylib
+   takes: nil, a String (\"F,E501\"), a keyword/symbol, or a collection of those."
+  ^String [sel]
+  (cond
+    (nil? sel)        nil
+    (string? sel)     sel
+    (coll? sel)       (let [s (str/join "," (map selector-spec sel))]
+                        (when-not (str/blank? s) s))
+    :else             (name sel)))
+
+(defn- unescape [^String s]
+  (if (neg? (.indexOf s (int \\)))
+    s
+    (let [sb (StringBuilder.)
+          n  (.length s)]
+      (loop [i 0]
+        (if (>= i n)
+          (.toString sb)
+          (let [c (.charAt s i)]
+            (if (and (= \\ c) (< (inc i) n))
+              (do (.append sb (case (.charAt s (inc i))
+                                \t \tab
+                                \n \newline
+                                \r \return
+                                \\ \\
+                                (.charAt s (inc i))))
+                  (recur (+ i 2)))
+              (do (.append sb c) (recur (inc i)))))))
+      (.toString sb))))
+
+(defn- parse-diagnostic [^String line]
+  (let [f (str/split line #"\t" 7)]
+    (when (= 7 (count f))
+      {:code        (nth f 0)
+       :row         (parse-long (nth f 1))
+       :col         (parse-long (nth f 2))
+       :end-row     (parse-long (nth f 3))
+       :end-col     (parse-long (nth f 4))
+       :is-fixable  (= "1" (nth f 5))
+       :message     (unescape (nth f 6))})))
+
+(defn lint
+  "Lint Python `code` with ruff and return a vector of diagnostic maps, in ruff's
+   own order:
+
+     {:code \"F401\" :message \"`os` imported but unused\"
+      :row 1 :col 1 :end-row 1 :end-col 10 :is-fixable true}
+
+   Rows and columns are 1-based; `:end-row`/`:end-col` are exclusive; `:code` is
+   the noqa code (`F401`) when the rule has one, else the rule id.
+
+   Options:
+     :line-length  int          — width for line-length rules (0/omitted => 88).
+     :select       selectors    — REPLACE the default rule set (\"F,E501\",
+                                  :F401, [\"F\" \"B\"]…). Omitted => ruff's
+                                  default selection (E4, E7, E9, F …).
+     :ignore       selectors    — disable these on top of the selection.
+     :preview      boolean      — also run preview rules.
+
+   Runs entirely in-process; no `# noqa`-file discovery and no `pyproject.toml` /
+   `ruff.toml` lookup, so the result depends only on `code` and these options
+   (inline `# noqa` comments in the source ARE honoured). Throws ex-info when
+   ruff cannot lint the input (unknown selector, or unparsable source); use
+   `lint-or` for the never-throw variant."
+  ([code] (lint code nil))
+  ([^String code {:keys [line-length select ignore preview]}]
+   (when (nil? code) (throw (ex-info "ruff/lint: code is nil" {})))
+   (with-open [arena (Arena/ofConfined)]
+     (let [cs  (fn [^String s] (if s (.allocateFrom ^Arena arena s) MemorySegment/NULL))
+           ret ^MemorySegment (invoke :lint
+                                      (cs code)
+                                      (int (or line-length 0))
+                                      (cs (selector-spec select))
+                                      (cs (selector-spec ignore))
+                                      (int (if preview 1 0)))]
+       (if (null? ret)
+         (throw (ex-info "ruff: lint failed (unknown rule selector, or a parse error)"
+                         {:select select :ignore ignore :line-length line-length}))
+         (let [s (cstr ret)]
+           (invoke :free ret)
+           (into []
+                 (keep parse-diagnostic)
+                 (str/split-lines (str/trim-newline (or s ""))))))))))
+
+(defn lint-or
+  "Like `lint`, but returns `default` (nil unless given) if ruff is unavailable
+   or fails — the display-side variant that never throws."
+  ([code] (lint-or code nil nil))
+  ([code opts] (lint-or code opts nil))
+  ([code opts default]
+   (try (lint code opts)
+        (catch Throwable _ default))))
+
+;; ---------------------------------------------------------------------------
+;; Public API — misc
+;; ---------------------------------------------------------------------------
 
 (defn version
   "The bundled ruff release string (`clj-ruff-cdylib (ruff X.Y.Z)`)."

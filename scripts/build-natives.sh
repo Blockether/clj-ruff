@@ -8,7 +8,8 @@
 #   platform ∈ { linux-x64 linux-arm64 darwin-arm64 darwin-x64 windows-x64 }
 #
 # With no triple it builds for the host (cargo default target). The cdylib wraps
-# ruff_python_formatter pinned in native/ruff-c/Cargo.toml (the ruff release tag).
+# ruff_python_formatter + ruff_linter pinned in native/ruff-c/Cargo.toml (the ruff
+# release tag).
 set -euo pipefail
 
 PLATFORM="${1:?usage: build-natives.sh <platform> [<triple>]}"

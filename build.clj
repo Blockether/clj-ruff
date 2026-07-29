@@ -47,7 +47,7 @@
                 :version version
                 :basis @basis
                 :src-dirs ["src"]
-                :pom-data (pom-data "Clojure binding to ruff — Python code formatting — over a first-party cdylib via FFM.")})
+                :pom-data (pom-data "Clojure binding to ruff — Python code formatting and linting — over a first-party cdylib via FFM.")})
   ;; Ship src + ONLY the META-INF/native-image config from resources/ — NOT
   ;; resources/prebuilds (those belong in the per-platform native jars) and NOT
   ;; the root resources/VERSION (we write the namespaced ruff/VERSION below).

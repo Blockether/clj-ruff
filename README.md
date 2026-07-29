@@ -1,13 +1,13 @@
 # clj-ruff
 
 Clojure binding to [ruff](https://github.com/astral-sh/ruff) for **Python code
-formatting only**, through the JDK Foreign Function & Memory API (FFM).
+formatting and linting**, through the JDK Foreign Function & Memory API (FFM).
 
 ruff ships a CLI, not a C-ABI library — so clj-ruff binds a tiny first-party
 cdylib (`native/ruff-c`, a thin `extern "C"` wrapper over ruff's
-`ruff_python_formatter` crate) and calls it **in-process** via a downcall. No
-subprocess, no CLI, no `pyproject.toml` / `ruff.toml` discovery: output depends
-only on the source and the line length you pass. This mirrors how
+`ruff_python_formatter` and `ruff_linter` crates) and calls it **in-process**
+via a downcall. No subprocess, no CLI, no `pyproject.toml` / `ruff.toml`
+discovery: output depends only on the source and the options you pass. This mirrors how
 [`clj-fff`](https://github.com/Blockether/clj-fff) and
 [`rift-clojure`](https://github.com/Blockether/rift-clojure) bind their native
 libraries.
@@ -56,18 +56,48 @@ For a slim deploy, also add the one native artifact for your target, e.g.
 
 (ruff/format-or "def (((broken" {})       ; => "def (((broken"  (verbatim fallback; never throws)
 
-(ruff/version)                            ; => "0.1.0 (ruff 0.15.19)"
+(ruff/version)                            ; => "0.2.0 (ruff 0.16.0)"
 (ruff/available?)                         ; => true
 ```
 
 `format` throws `ex-info` on syntactically invalid Python; `format-or` returns
 the input unchanged instead — the convenient display-side default.
 
-### Options
+### Format options
 
 | key            | meaning                                            |
 |----------------|----------------------------------------------------|
 | `:line-length` | wrap width (`0` / omitted → ruff default **88**)   |
+
+## Lint
+
+```clojure
+(ruff/lint "import os\nx = 1\n")
+;; => [{:code "F401" :message "`os` imported but unused"
+;;      :row 1 :col 8 :end-row 1 :end-col 10 :is-fixable true}]
+
+(ruff/lint "if x == None: pass" {:select "E711"})
+(ruff/lint code {:select ["F" "E7"] :ignore "F401" :line-length 120 :preview true})
+
+(ruff/lint-or code {} [])   ; never throws; returns the default on failure
+```
+
+Rows/columns are **1-based**, `:end-row`/`:end-col` exclusive, `:code` is the
+noqa code (`F401`) when the rule has one and otherwise the rule id. With no
+`:select` you get ruff's own default rule set; `:select` **replaces** it and
+`:ignore` subtracts from whatever is selected. Inline `# noqa` comments in the
+source are honoured; no config file is ever read. Syntax errors come back as
+ordinary diagnostics with code `invalid-syntax` (they do **not** throw) — an
+unknown rule selector does throw, and `lint-or` swallows it.
+
+### Lint options
+
+| key             | meaning                                                              |
+|-----------------|----------------------------------------------------------------------|
+| `:select`       | replace the default rule set — `"F,E501"`, `:F401`, `["F" "B"]`, `"ALL"` |
+| `:ignore`       | disable these selectors on top of the selection                      |
+| `:line-length`  | limit for `E501` / wrap-width rules (`0` / omitted → **88**)          |
+| `:preview`      | also run ruff's preview rules                                        |
 
 ## GraalVM native-image
 

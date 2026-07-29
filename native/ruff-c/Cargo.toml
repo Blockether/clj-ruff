@@ -1,17 +1,25 @@
 [package]
 name = "ruff-c"
-version = "0.1.0"
-edition = "2021"
-description = "Minimal C ABI over ruff's Python formatter (ruff_python_formatter) for clj-ruff's FFM binding."
+version = "0.2.0"
+edition = "2024"
+description = "Minimal C ABI over ruff's Python formatter (ruff_python_formatter) and linter (ruff_linter) for clj-ruff's FFM binding."
 license = "MIT"
 
 [lib]
 name = "ruff_c"
 crate-type = ["cdylib"]
 
+# One pinned ruff release for every crate — mixing tags does not link.
 [dependencies]
-ruff_python_formatter = { git = "https://github.com/astral-sh/ruff", tag = "0.15.19" }
-ruff_formatter = { git = "https://github.com/astral-sh/ruff", tag = "0.15.19" }
+ruff_formatter = { git = "https://github.com/astral-sh/ruff", tag = "0.16.0" }
+ruff_linter = { git = "https://github.com/astral-sh/ruff", tag = "0.16.0" }
+ruff_python_ast = { git = "https://github.com/astral-sh/ruff", tag = "0.16.0" }
+ruff_python_codegen = { git = "https://github.com/astral-sh/ruff", tag = "0.16.0" }
+ruff_python_formatter = { git = "https://github.com/astral-sh/ruff", tag = "0.16.0" }
+ruff_python_index = { git = "https://github.com/astral-sh/ruff", tag = "0.16.0" }
+ruff_python_parser = { git = "https://github.com/astral-sh/ruff", tag = "0.16.0" }
+ruff_source_file = { git = "https://github.com/astral-sh/ruff", tag = "0.16.0" }
+ruff_text_size = { git = "https://github.com/astral-sh/ruff", tag = "0.16.0" }
 
 [profile.release]
 lto = true
