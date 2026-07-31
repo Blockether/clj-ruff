@@ -16,7 +16,7 @@
 ;; `ruff-native-<platform>` jar (or set RUFF_NATIVE_PATH) and need neither.
 {:paths ["src" "resources"]
 
- :deps {}
+ :deps {com.blockether/nativeresolver {:mvn/version "0.1.0"}}
 
  :aliases
  {;; Optional: enables the runtime native-jar DOWNLOAD fallback (clojars/central
