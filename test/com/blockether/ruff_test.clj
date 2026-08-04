@@ -177,3 +177,24 @@
                                                   :path (str (java.io.File. dir ^String rel))})))]
       (is (= [] (codes "shims/a.py")))
       (is (= ["F401"] (codes "pkg/b.py"))))))
+
+;; ── Release version consistency ──────────────────────────────────────────────
+;; Regression: `resources/VERSION` was EMPTY while the cdylib crate in
+;; native/ruff-c/Cargo.toml still said 0.3.2 and Clojars carried 0.3.3. Every
+;; local `-T:build jar` therefore stamped the namespaced `ruff/VERSION`
+;; resource — the one the native resolver uses to fetch
+;; `com.blockether/ruff-native-<platform>` — with a bare "-SNAPSHOT", and
+;; `(ruff/version)` reported a release number that had never been released.
+
+(def ^:private declared-version (str/trim (slurp "resources/VERSION")))
+
+(defn- crate-version []
+  (second (re-find #"(?m)^version\s*=\s*\"([^\"]+)\"" (slurp "native/ruff-c/Cargo.toml"))))
+
+(deftest version-sources-agree
+  (testing "resources/VERSION carries a real release number"
+    (is (re-matches #"\d+\.\d+\.\d+" declared-version)))
+  (testing "the cdylib crate version IS clj-ruff's own version"
+    (is (= declared-version (crate-version))))
+  (testing "the linked library reports <clj-ruff> (ruff <pinned>)"
+    (is (re-matches #"\d+\.\d+\.\d+ \(ruff \d+\.\d+\.\d+\)" (ruff/version)))))

@@ -6,8 +6,9 @@ formatting and linting**, through the JDK Foreign Function & Memory API (FFM).
 ruff ships a CLI, not a C-ABI library — so clj-ruff binds a tiny first-party
 cdylib (`native/ruff-c`, a thin `extern "C"` wrapper over ruff's
 `ruff_python_formatter` and `ruff_linter` crates) and calls it **in-process**
-via a downcall. No subprocess, no CLI, no `pyproject.toml` / `ruff.toml`
-discovery: output depends only on the source and the options you pass. This mirrors how
+via a downcall. No subprocess, no CLI, and no *implicit* `pyproject.toml` /
+`ruff.toml` discovery: output depends only on the source, the options you pass
+and the config you ask for (`config-file`, below). This mirrors how
 [`clj-fff`](https://github.com/Blockether/clj-fff) and
 [`rift-clojure`](https://github.com/Blockether/rift-clojure) bind their native
 libraries.
@@ -56,7 +57,7 @@ For a slim deploy, also add the one native artifact for your target, e.g.
 
 (ruff/format-or "def (((broken" {})       ; => "def (((broken"  (verbatim fallback; never throws)
 
-(ruff/version)                            ; => "0.3.0 (ruff 0.16.0)"
+(ruff/version)                            ; => "0.3.4 (ruff 0.16.0)"
 (ruff/available?)                         ; => true
 ```
 
@@ -145,8 +146,12 @@ clojure -T:build jar            # main jar
 clojure -T:build native-jar :platform darwin-arm64   # per-platform native jar
 ```
 
-The bundled ruff release is pinned in `native/ruff-c/Cargo.toml`. clj-ruff's own
-(Clojars) version in `resources/VERSION` is independent of it.
+The bundled **ruff** release is pinned in `native/ruff-c/Cargo.toml`'s
+dependency tags and is independent of clj-ruff's own version. That version —
+the Clojars coordinate, the release tag `vX.Y.Z`, the `ruff-c` **crate**
+version `ruff_version` reports, and the namespaced `ruff/VERSION` resource the
+native resolver reads — has ONE source, `resources/VERSION`; `-T:build jar`
+and `native-jar` refuse to build when those disagree.
 
 ## License
 

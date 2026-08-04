@@ -1,7 +1,7 @@
 ;; clj-ruff — Clojure binding to ruff (astral-sh/ruff) for Python code
-;; FORMATTING ONLY, in-process via the JDK Foreign Function & Memory API over a
-;; first-party cdylib (native/ruff-c over ruff_python_formatter). No subprocess,
-;; no linting surface.
+;; FORMATTING **and LINTING**, in-process via the JDK Foreign Function & Memory
+;; API over a first-party cdylib (native/ruff-c over ruff_python_formatter and
+;; ruff_linter). No subprocess, no `ruff` binary on PATH.
 ;;
 ;; The cdylib is resolved at runtime from RUFF_NATIVE_PATH, a bundled classpath
 ;; resource (com.blockether/ruff-native-<platform>), or — as a fallback — the

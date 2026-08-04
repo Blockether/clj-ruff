@@ -16,14 +16,36 @@
                   "darwin-x64"   "libruff_c.dylib"
                   "windows-x64"  "ruff_c.dll"})
 
+(def declared-version
+  "clj-ruff's own release number. `resources/VERSION` is the single source of
+   truth; the `ruff-c` crate version and the release tag mirror it."
+  (str/trim (slurp "resources/VERSION")))
+
 (def version
-  "VERSION env (set by CI from the release tag) wins; otherwise the
-   resources/VERSION file tagged `-SNAPSHOT` for local builds."
+  "VERSION env (set by CI from the release tag) wins; otherwise
+   `declared-version` tagged `-SNAPSHOT` for local builds."
   (let [v (System/getenv "VERSION")]
     (cond
       (and v (str/starts-with? v "v")) (subs v 1)
       v v
-      :else (str (str/trim (slurp "resources/VERSION")) "-SNAPSHOT"))))
+      :else (str declared-version "-SNAPSHOT"))))
+
+(defn- crate-version []
+  (second (re-find #"(?m)^version\s*=\s*\"([^\"]+)\"" (slurp "native/ruff-c/Cargo.toml"))))
+
+(defn- check-version!
+  "Refuse to build artifacts whose version sources disagree. The tag names the
+   Clojars coordinate, `resources/VERSION` is stamped into the namespaced
+   `ruff/VERSION` resource that resolves `ruff-native-<platform>`, and the crate
+   version is what `ruff_version` reports at runtime — drift there ships a 404
+   or a lying version string."
+  []
+  (let [release (str/replace version #"-SNAPSHOT$" "")
+        crate   (crate-version)]
+    (when-not (= release declared-version crate)
+      (throw (ex-info (format "version mismatch: release %s, resources/VERSION %s, ruff-c crate %s"
+                              release declared-version crate)
+                      {:release release :declared declared-version :crate crate})))))
 
 (def class-dir "target/classes")
 (def native-class-dir "target/native-classes")
@@ -41,6 +63,7 @@
     [:developerConnection "scm:git:ssh://git@github.com/Blockether/clj-ruff.git"]]])
 
 (defn jar [_]
+  (check-version!)
   (clean nil)
   (b/write-pom {:class-dir class-dir
                 :lib lib
@@ -66,6 +89,7 @@
   (symbol "com.blockether" (str "ruff-native-" platform)))
 
 (defn native-jar [{:keys [platform]}]
+  (check-version!)
   (let [platform (some-> platform name)]
     (when-not (native-platforms platform)
       (throw (ex-info (str "Unknown native platform: " platform) {:platform platform :known native-platforms})))
