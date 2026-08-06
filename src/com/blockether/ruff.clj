@@ -59,6 +59,7 @@
                :format-cfg  [:ptr "ruff_format_with_config" :ptr :ptr :ptr :u32]
                :lint        [:ptr "ruff_lint" :ptr :u32 :ptr :ptr :u32]
                :lint-cfg    [:ptr "ruff_lint_with_config" :ptr :ptr :ptr :u32 :ptr :ptr :u32]
+               :fix-cfg     [:ptr "ruff_fix_with_config" :ptr :ptr :ptr :u32 :ptr :ptr :u32 :u32]
                :find-config [:ptr "ruff_find_config" :ptr]
                :last-error  [:ptr "ruff_last_error"]
                :free        [nil  "ruff_free_string" :ptr]
@@ -150,9 +151,38 @@
   (^String [code opts]
    (try (format code opts)
         (catch Throwable _ code))))
+(declare selector-spec)
+
+(defn fix
+  "Apply Ruff lint fixes to Python `code` and return the resulting source.
+
+   Options match `lint` (`:config`, `:path`, `:line-length`, `:select`, `:ignore`,
+   `:preview`) plus `:unsafe-fixes`, which opts into Ruff's unsafe fixes."
+  (^String [code] (fix code nil))
+  (^String [^String code {:keys [line-length config path select ignore preview unsafe-fixes]}]
+   (when (nil? code) (throw (ex-info "ruff/fix: code is nil" {})))
+   (with-open [arena (Arena/ofConfined)]
+     (let [cs  (fn [s] (if s (.allocateFrom ^Arena arena (str s)) MemorySegment/NULL))
+           ret ^MemorySegment (invoke :fix-cfg
+                                      (cs code)
+                                      (cs config)
+                                      (cs path)
+                                      (int (or line-length 0))
+                                      (cs (selector-spec select))
+                                      (cs (selector-spec ignore))
+                                      (int (if preview 1 0))
+                                      (int (if unsafe-fixes 1 0)))]
+       (or (take-string! ret)
+           (let [err (last-error)]
+             (throw (ex-info (str "ruff: fix failed" (when err (str " — " err)))
+                             {:select select :ignore ignore :line-length line-length
+                              :config (some-> config str) :path (some-> path str)
+                              :unsafe-fixes unsafe-fixes :error err}))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Public API — linting
+;; ---------------------------------------------------------------------------
+
 ;; ---------------------------------------------------------------------------
 
 (defn- selector-spec

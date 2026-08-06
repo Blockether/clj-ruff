@@ -74,6 +74,9 @@ use ruff_python_formatter::{PyFormatOptions, format_module_source};
 use ruff_python_index::Indexer;
 use ruff_python_parser::{ParseOptions, parse_unchecked};
 use ruff_source_file::PositionEncoding;
+use ruff_text_size::Ranged;
+use ruff_db::diagnostic::Diagnostic;
+use ruff_diagnostics::Applicability;
 use ruff_workspace::Settings;
 use ruff_workspace::configuration::Configuration;
 use ruff_workspace::pyproject::find_settings_toml;
@@ -446,6 +449,161 @@ pub extern "C" fn ruff_lint_with_config(
     }))
     .unwrap_or_else(|_| {
         set_error("ruff panicked while linting");
+        ptr::null_mut()
+    })
+}
+
+fn lint_diagnostics(
+    source: &str,
+    settings: Option<&Settings>,
+    file_path: Option<&str>,
+    line_length: c_uint,
+    select: Option<&str>,
+    ignore: Option<&str>,
+    preview: c_uint,
+) -> Result<Vec<Diagnostic>, ()> {
+    let no_config = settings.is_none();
+    let fallback;
+    let settings: &Settings = match settings {
+        Some(settings) => settings,
+        None => {
+            fallback = default_settings();
+            &fallback
+        }
+    };
+    let mut settings = settings.linter.clone();
+    let preview_options = PreviewOptions {
+        mode: match preview {
+            0 => PreviewMode::Disabled,
+            1 => PreviewMode::Enabled,
+            _ => settings.preview,
+        },
+        ..PreviewOptions::default()
+    };
+    if no_config {
+        settings.rules = parse_selectors(Some("E4,E7,E9,F"))?
+            .iter()
+            .flat_map(|s| s.rules(&preview_options))
+            .collect();
+    }
+    let selected = parse_selectors(select)?;
+    if !selected.is_empty() {
+        settings.rules = selected.iter().flat_map(|s| s.rules(&preview_options)).collect();
+    }
+    for rule in parse_selectors(ignore)?.iter().flat_map(|s| s.rules(&preview_options)) {
+        settings.rules.disable(rule);
+    }
+    if line_length != 0
+        && let Ok(w) = LineLength::try_from(line_length as u16)
+    {
+        settings.line_length = w;
+        settings.pycodestyle.max_line_length = w;
+    }
+    let source_type = source_type_of(file_path);
+    let source_kind = SourceKind::Python {
+        code: source.to_string(),
+        is_stub: source_type.is_stub(),
+    };
+    let target_version = settings.unresolved_target_version;
+    let parse_options = ParseOptions::from(source_type).with_target_version(target_version.parser_version());
+    let parsed = parse_unchecked(source_kind.source_code(), parse_options)
+        .try_into_module()
+        .ok_or_else(|| {
+            set_error("ruff could not parse the source as a Python module");
+        })?;
+    let locator = Locator::new(source);
+    let stylist = Stylist::from_tokens(parsed.tokens(), locator.contents());
+    let indexer = Indexer::from_tokens(parsed.tokens(), locator.contents());
+    let directives = directives::extract_directives(
+        parsed.tokens(),
+        directives::Flags::from_settings(&settings),
+        &locator,
+        &indexer,
+    );
+    let suppressions = Suppressions::from_tokens(locator.contents(), parsed.tokens(), &indexer, &settings);
+    Ok(check_path(
+        Path::new(file_path.unwrap_or("<source>")),
+        None,
+        &locator,
+        &stylist,
+        &indexer,
+        &directives,
+        &settings,
+        flags::Noqa::Enabled,
+        &source_kind,
+        source_type,
+        &parsed,
+        target_version,
+        &suppressions,
+    ))
+}
+
+fn apply_fixes(source: &str, diagnostics: &[Diagnostic], unsafe_fixes: bool) -> String {
+    let minimum = if unsafe_fixes { Applicability::Unsafe } else { Applicability::Safe };
+    let mut edits = diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic.fix())
+        .filter(|fix| fix.applies(minimum))
+        .flat_map(|fix| fix.edits().iter())
+        .collect::<Vec<_>>();
+    edits.sort_by_key(|edit| (edit.start(), edit.end()));
+    let mut output = String::with_capacity(source.len());
+    let mut last = 0usize;
+    for edit in edits {
+        let start = edit.start().to_usize();
+        let end = edit.end().to_usize();
+        if start < last || end > source.len() {
+            continue;
+        }
+        output.push_str(&source[last..start]);
+        output.push_str(edit.content().unwrap_or_default());
+        last = end;
+    }
+    output.push_str(&source[last..]);
+    output
+}
+
+/// Lint and apply safe fixes (or unsafe fixes when `unsafe_fixes` is non-zero).
+#[unsafe(no_mangle)]
+pub extern "C" fn ruff_fix_with_config(
+    src: *const c_char,
+    config_path: *const c_char,
+    file_path: *const c_char,
+    line_length: c_uint,
+    select: *const c_char,
+    ignore: *const c_char,
+    preview: c_uint,
+    unsafe_fixes: c_uint,
+) -> *mut c_char {
+    clear_error();
+    let Some(source) = (unsafe { c_str(src) }) else {
+        set_error("source is null or not valid UTF-8");
+        return ptr::null_mut();
+    };
+    let (Ok(config_path), Ok(file_path), Ok(select), Ok(ignore)) = (
+        unsafe { opt_str(config_path, "config path") },
+        unsafe { opt_str(file_path, "file path") },
+        unsafe { opt_str(select, "select") },
+        unsafe { opt_str(ignore, "ignore") },
+    ) else {
+        return ptr::null_mut();
+    };
+    catch_unwind(AssertUnwindSafe(|| {
+        let settings = match config_path.map(settings_for) {
+            Some(Ok(settings)) => Some(settings),
+            Some(Err(message)) => {
+                set_error(message);
+                return ptr::null_mut();
+            }
+            None => None,
+        };
+        match lint_diagnostics(source, settings.as_deref(), file_path, line_length, select, ignore, preview) {
+            Ok(diagnostics) => into_c_string(apply_fixes(source, &diagnostics, unsafe_fixes != 0)),
+            Err(()) => ptr::null_mut(),
+        }
+    }))
+    .unwrap_or_else(|_| {
+        set_error("ruff panicked while applying fixes");
         ptr::null_mut()
     })
 }

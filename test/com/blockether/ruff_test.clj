@@ -12,8 +12,8 @@
 
 (deftest wraps-long-call
   (let [out (ruff/format
-              "result = some_function(argument_one, argument_two, argument_three, argument_four, keyword=value)"
-              {:line-length 60})]
+             "result = some_function(argument_one, argument_two, argument_three, argument_four, keyword=value)"
+             {:line-length 60})]
     (is (str/includes? out "some_function(\n"))
     (is (str/includes? out "    argument_one,"))
     ;; trailing magic comma on the wrapped call
@@ -22,7 +22,7 @@
 (deftest normalizes-style
   ;; black/ruff style: spaces around dict colons + after commas, double quotes.
   (is (= "x = {\"a\": 1, \"b\": 2}\n"
-        (ruff/format "x={'a':1,'b':2}" {:line-length 88}))))
+         (ruff/format "x={'a':1,'b':2}" {:line-length 88}))))
 
 (deftest leaves-short-code-essentially-alone
   (is (= "y = 1 + 2\n" (ruff/format "y = 1 + 2" {}))))
@@ -177,6 +177,9 @@
                                                   :path (str (java.io.File. dir ^String rel))})))]
       (is (= [] (codes "shims/a.py")))
       (is (= ["F401"] (codes "pkg/b.py"))))))
+(deftest fix-applies-safe-diagnostics
+  (is (= "x = 1\n"
+         (ruff/fix "import os\nx = 1\n"))))
 
 ;; ── Release version consistency ──────────────────────────────────────────────
 ;; Regression: `resources/VERSION` was EMPTY while the cdylib crate in

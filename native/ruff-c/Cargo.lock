@@ -1494,8 +1494,10 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "ruff-c"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
+ "ruff_db",
+ "ruff_diagnostics",
  "ruff_formatter",
  "ruff_linter",
  "ruff_python_ast",
